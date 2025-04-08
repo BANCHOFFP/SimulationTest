@@ -1,0 +1,295 @@
+import random
+import math
+import copy # For deep copying organisms during reproduction
+
+# --- Configuration ---
+INITIAL_PLANTS = 50
+INITIAL_HERBIVORES = 15
+INITIAL_CARNIVORES = 5
+
+GRID_SIZE = 20 # Affects resource density if plants used locations
+MAX_SIMULATION_STEPS = 200
+
+# --- Base Organism Class ---
+class Organism:
+    """Base class for all organisms in the ecosystem."""
+    id_counter = 0
+
+    def __init__(self, energy, max_age, reproduction_cost, mutation_rate=0.05):
+        self.id = Organism.id_counter
+        Organism.id_counter += 1
+        self.energy = float(energy)
+        self.age = 0
+        self.max_age = max_age
+        self.reproduction_cost = float(reproduction_cost)
+        self.mutation_rate = mutation_rate
+        self.alive = True
+
+    def update(self, ecosystem):
+        """Basic update step: aging and metabolic cost."""
+        self.age += 1
+        self.energy -= 1 # Basic metabolic cost per step
+        if self.energy <= 0 or self.age > self.max_age:
+            self.die(ecosystem)
+            return False # Indicate death
+        return True # Indicate survival
+
+    def die(self, ecosystem):
+        """Mark organism as dead."""
+        self.alive = False
+        # print(f"{self.__class__.__name__} {self.id} died.")
+
+    def _mutate_trait(self, trait_value):
+        """Applies a small random mutation to a trait."""
+        if random.random() < self.mutation_rate:
+            mutation_amount = random.gauss(0, trait_value * 0.1 + 0.01) # Mutate by ~10%
+            return max(0.01, trait_value + mutation_amount) # Ensure trait doesn't go below a small positive value
+        return trait_value
+
+    def get_offspring(self):
+        """Creates a new offspring with potentially mutated traits."""
+        if self.energy > self.reproduction_cost * 2: # Need energy for self + offspring
+            self.energy -= self.reproduction_cost
+            # Create a deep copy to inherit traits, then mutate
+            offspring = copy.deepcopy(self)
+            offspring.id = Organism.id_counter
+            Organism.id_counter += 1
+            offspring.energy = self.reproduction_cost # Start offspring with initial energy
+            offspring.age = 0
+            offspring.alive = True
+
+            # --- Apply Mutations ---
+            # Mutate common traits
+            offspring.max_age = int(self._mutate_trait(self.max_age))
+            offspring.reproduction_cost = self._mutate_trait(self.reproduction_cost)
+            offspring.mutation_rate = self._mutate_trait(self.mutation_rate)
+
+            # Mutate specific traits (example placeholders, override in subclasses)
+            if hasattr(offspring, 'growth_rate'):
+                 offspring.growth_rate = self._mutate_trait(offspring.growth_rate)
+            if hasattr(offspring, 'grazing_efficiency'):
+                 offspring.grazing_efficiency = self._mutate_trait(offspring.grazing_efficiency)
+            if hasattr(offspring, 'hunting_skill'):
+                 offspring.hunting_skill = self._mutate_trait(offspring.hunting_skill)
+            if hasattr(offspring, 'evasion_skill'):
+                 offspring.evasion_skill = self._mutate_trait(offspring.evasion_skill)
+
+            # print(f"New {self.__class__.__name__} {offspring.id} born from {self.id}")
+            return offspring
+        return None
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(ID:{self.id}, E:{self.energy:.1f}, Age:{self.age})"
+
+# --- Specific Species Classes ---
+class Plant(Organism):
+    """Plants photosynthesize to gain energy."""
+    def __init__(self, energy=10, max_age=20, reproduction_cost=5, growth_rate=2.0):
+        super().__init__(energy, max_age, reproduction_cost)
+        self.growth_rate = float(growth_rate)
+
+    def update(self, ecosystem):
+        """Plants grow (photosynthesize)."""
+        if not super().update(ecosystem): # Handle aging/death first
+             return False
+        # Photosynthesis - gain energy
+        self.energy += self.growth_rate
+        return True
+
+    # Reproduction handled by base class get_offspring
+
+class Herbivore(Organism):
+    """Herbivores eat Plants."""
+    def __init__(self, energy=50, max_age=50, reproduction_cost=25, grazing_efficiency=0.7, evasion_skill=0.3):
+        super().__init__(energy, max_age, reproduction_cost)
+        self.grazing_efficiency = float(grazing_efficiency) # How much energy gained from eating
+        self.evasion_skill = float(evasion_skill) # Chance to evade carnivores
+
+    def update(self, ecosystem):
+        """Herbivores try to eat plants."""
+        if not super().update(ecosystem):
+            return False
+
+        # Try to graze
+        target_plant = ecosystem.find_nearby_organism(self, Plant)
+        if target_plant:
+            energy_gain = min(target_plant.energy, 15) * self.grazing_efficiency # Eat up to 15 energy
+            self.energy += energy_gain
+            target_plant.energy -= min(target_plant.energy, 15) # Plant loses energy
+            # print(f"Herbivore {self.id} grazed on Plant {target_plant.id}, gained {energy_gain:.1f}")
+            if target_plant.energy <= 0:
+                target_plant.die(ecosystem) # Plant might die from being eaten
+
+        return True
+
+class Carnivore(Organism):
+    """Carnivores eat Herbivores."""
+    def __init__(self, energy=100, max_age=70, reproduction_cost=50, hunting_skill=0.6):
+        super().__init__(energy, max_age, reproduction_cost)
+        self.hunting_skill = float(hunting_skill) # Chance to successfully hunt
+
+    def update(self, ecosystem):
+        """Carnivores try to hunt herbivores."""
+        if not super().update(ecosystem):
+            return False
+
+        # Try to hunt
+        target_herbivore = ecosystem.find_nearby_organism(self, Herbivore)
+        if target_herbivore:
+            # Check evasion vs hunting skill
+            hunt_success_chance = max(0, self.hunting_skill - target_herbivore.evasion_skill)
+            if random.random() < hunt_success_chance:
+                 energy_gain = target_herbivore.energy * 0.8 # Gain 80% of prey's energy
+                 self.energy += energy_gain
+                 # print(f"Carnivore {self.id} hunted Herbivore {target_herbivore.id}, gained {energy_gain:.1f}")
+                 target_herbivore.die(ecosystem) # Herbivore dies
+            # else:
+            #     print(f"Carnivore {self.id} failed to hunt Herbivore {target_herbivore.id}")
+
+
+        return True
+
+# --- Ecosystem Class ---
+class Ecosystem:
+    """Manages the simulation environment and organisms."""
+    def __init__(self, size):
+        self.size = size # Could be used for spatial limits later
+        self.organisms = []
+        self.step_count = 0
+
+    def add_organism(self, organism):
+        self.organisms.append(organism)
+
+    def remove_dead(self):
+        """Removes organisms marked as not alive."""
+        initial_count = len(self.organisms)
+        self.organisms = [org for org in self.organisms if org.alive]
+        removed_count = initial_count - len(self.organisms)
+        # if removed_count > 0:
+        #     print(f"Step {self.step_count}: Removed {removed_count} dead organisms.")
+
+    def find_nearby_organism(self, seeker, target_type):
+        """
+        Finds a potential target organism.
+        (Simplified: randomly selects from available targets).
+        A spatial grid would make this more realistic.
+        """
+        potential_targets = [org for org in self.organisms if isinstance(org, target_type) and org.alive and org is not seeker]
+        if potential_targets:
+            return random.choice(potential_targets)
+        return None
+
+    def simulate_step(self):
+        """Runs one step of the simulation."""
+        self.step_count += 1
+        print(f"\n--- Step {self.step_count} ---")
+
+        # 1. Update organisms (age, metabolism, actions like eating/growing)
+        # Shuffle to avoid order bias in interactions
+        random.shuffle(self.organisms)
+        newly_born = []
+        survivors = []
+
+        for org in self.organisms:
+             if org.alive: # Only update living organisms
+                 survived_update = org.update(self)
+                 if survived_update:
+                     survivors.append(org)
+                     # 2. Reproduction (check after update)
+                     offspring = org.get_offspring()
+                     if offspring:
+                         newly_born.append(offspring)
+
+
+        self.organisms = survivors # Keep only those that survived the update cycle
+
+        # 3. Add newborns
+        for baby in newly_born:
+             self.add_organism(baby)
+        if newly_born:
+            print(f"Step {self.step_count}: {len(newly_born)} new organisms born.")
+
+        # 4. Remove any organisms that died during interactions or update
+        self.remove_dead()
+
+        # 5. Report status
+        self.report_status()
+
+    def report_status(self):
+        """Prints the current counts of each species."""
+        counts = {Plant: 0, Herbivore: 0, Carnivore: 0}
+        avg_traits = {
+            Plant: {'energy': 0, 'growth': 0},
+            Herbivore: {'energy': 0, 'grazing': 0, 'evasion': 0},
+            Carnivore: {'energy': 0, 'hunting': 0}
+        }
+        totals = {k: 0 for k in avg_traits}
+
+        for org in self.organisms:
+            org_type = type(org)
+            if org_type in counts:
+                counts[org_type] += 1
+                totals[org_type] += 1
+                avg_traits[org_type]['energy'] += org.energy
+                if isinstance(org, Plant):
+                    avg_traits[org_type]['growth'] += org.growth_rate
+                elif isinstance(org, Herbivore):
+                    avg_traits[org_type]['grazing'] += org.grazing_efficiency
+                    avg_traits[org_type]['evasion'] += org.evasion_skill
+                elif isinstance(org, Carnivore):
+                    avg_traits[org_type]['hunting'] += org.hunting_skill
+
+
+        print("Population Counts:")
+        for species, count in counts.items():
+            print(f"  {species.__name__}: {count}")
+            if count > 0:
+                 print(f"    Avg Energy: {avg_traits[species]['energy'] / count:.2f}")
+                 if species is Plant:
+                     print(f"    Avg Growth Rate: {avg_traits[species]['growth'] / count:.2f}")
+                 elif species is Herbivore:
+                     print(f"    Avg Grazing Eff: {avg_traits[species]['grazing'] / count:.2f}")
+                     print(f"    Avg Evasion Skill: {avg_traits[species]['evasion'] / count:.2f}")
+                 elif species is Carnivore:
+                      print(f"    Avg Hunting Skill: {avg_traits[species]['hunting'] / count:.2f}")
+
+
+        if not any(counts.values()):
+            print("Ecosystem Empty!")
+            return False # Signal to stop simulation
+        return True
+
+# --- Main Simulation ---
+if __name__ == "__main__":
+    print("Initializing Ecosystem...")
+    ecosystem = Ecosystem(size=GRID_SIZE)
+
+    # Populate initial organisms
+    for _ in range(INITIAL_PLANTS):
+        ecosystem.add_organism(Plant())
+    for _ in range(INITIAL_HERBIVORES):
+        ecosystem.add_organism(Herbivore())
+    for _ in range(INITIAL_CARNIVORES):
+        ecosystem.add_organism(Carnivore())
+
+    print("Starting Simulation...")
+    ecosystem.report_status()
+
+    for step in range(MAX_SIMULATION_STEPS):
+        if not ecosystem.organisms: # Stop if ecosystem is empty
+             print("\nSimulation stopped: Ecosystem is empty.")
+             break
+        keep_running = ecosystem.simulate_step()
+        if not keep_running:
+             print(f"\nSimulation stopped after step {ecosystem.step_count}.")
+             break
+
+        # Add a small chance for new immigrant organisms (optional)
+        # if random.random() < 0.01:
+        #      ecosystem.add_organism(Plant())
+        # if random.random() < 0.005:
+        #      ecosystem.add_organism(Herbivore())
+
+
+    print("\nSimulation Finished.")
+    ecosystem.report_status()
